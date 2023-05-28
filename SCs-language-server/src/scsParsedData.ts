@@ -330,7 +330,9 @@ export class SCsParsedData {
 
         if (!finfo)
             return; // we need to work safe
-
+        if (err.len === 0) {
+            err.len = 1;
+        }
         // append symbol
         finfo.appendError(err);
     }
