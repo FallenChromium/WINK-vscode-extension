@@ -3,7 +3,7 @@
 import * as vs from 'vscode-languageserver';
 import { SCsSession } from './scsSession.js';
 import { getFilesInDirectory, getFileContent, normalizeFilePath } from './scsUtils.js';
-import {ScClient} from 'ts-sc-client-ws';
+import { ScClient } from 'ts-sc-client-ws';
 
 interface scsServerParams {
     onlineMode: boolean
@@ -32,6 +32,11 @@ export class ScClientWrapper {
         this.url = scMachineUrl;
         this.online = isOnline;
         this.connection = (this.url && this.online) ? new ScClient(scMachineUrl) : null;
+        if (this.connection) {
+            this.connection.addEventListener("close", () => {
+                this.online = false
+            })
+        }
     }
 
     get isOnline(): boolean {
@@ -46,7 +51,7 @@ const session: SCsSession = new SCsSession(connection, client, documents);
 
 function parseAllOpenedDocuments() {
     documents.all().forEach((doc: vs.TextDocument, index: number, array: vs.TextDocument[]) => {
-        session.parsedData.parseDocumentANTLR(doc.getText(), doc.uri);
+        session.parsedData.parseDocument(doc.getText(), doc.uri);
     });
 }
 
@@ -57,7 +62,7 @@ function parseDocumentsInFolder(path: string) {
     const files: string[] = getFilesInDirectory(path, ['.scs', '.scsi']);
     files.forEach((filePath: string) => {
         const content: string = getFileContent(filePath).toString();
-        session.parsedData.parseDocumentANTLR(content, filePath);
+        session.parsedData.parseDocument(content, filePath);
     });
     
 }
@@ -105,7 +110,7 @@ connection.onDocumentHighlight(session.onDocumentHighlight());
 connection.onRenameRequest(session.onRename());
 
 documents.onDidChangeContent((event) => {
-    session.parsedData.parseDocumentANTLR(event.document.getText(), normalizeFilePath(event.document.uri));
+    session.parsedData.parseDocument(event.document.getText(), normalizeFilePath(event.document.uri));
 });
 
 // Listen on the connection

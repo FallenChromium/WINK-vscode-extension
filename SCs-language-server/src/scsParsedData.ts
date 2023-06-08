@@ -9,6 +9,8 @@ import scsParser from './syntax/scsParser.js';
 import { Idtf_systemContext, Attr_listContext } from './syntax/scsParser.js';
 import { ScClientWrapper } from './scsServer.js';
 import scsListener from './syntax/scsListener.js';
+import { ScAddr } from 'ts-sc-client-ws';
+import { ISCsASTNode } from 'ts-sc-client-ws/build/types/types.js';
 
 interface ParseError {
     line: number,
@@ -25,7 +27,11 @@ class SCsErrorListener implements ErrorListener<any> {
         this.callback = callback;
     }
 
-    syntaxError(recognizer: any, offendingSymbol: { text: string | any[]; }, line: any, charPositionInLine: any, msg: string, e: any): void {
+    syntaxError(recognizer: any, 
+        offendingSymbol: { text: string | any[]; }, 
+        line: any, 
+        charPositionInLine: any, 
+        msg: string, e: any): void {
         this.callback({
             line: line,
             offset: charPositionInLine,
@@ -48,7 +54,7 @@ class scsTreeWalker extends scsListener {
                 {
                     line: id.symbol.line,
                     len: id.symbol.text.length,
-                    offset: id.symbol.column+1
+                    offset: id.symbol.column + 1
                 }
             )
         );
@@ -67,7 +73,7 @@ class scsTreeWalker extends scsListener {
             id.forEach((element: TerminalNode) => {
                 this.addSymbol(element);
 
-            })        
+            })
         }
     }
 }
@@ -107,6 +113,7 @@ function toRange(range: SymbolRange): vs.Range {
     const endPos: vs.Position = vs.Position.create(range.end.line - 1, range.end.column - 1);
     return vs.Range.create(begPos, endPos);
 }
+
 
 class FileInfo {
     private uri: string;             // uri of a file
@@ -178,6 +185,8 @@ export class SCsParsedData {
     private console;
     private files: Map<string, FileInfo>;
     private conn: ScClientWrapper
+    private mainIdtfKeynode: ScAddr | null = null;
+    private systemIdtfKeynode: ScAddr | null = null;
 
     constructor(inConsole: RemoteConsole, scClient: ScClientWrapper) {
         this.console = inConsole;
@@ -192,9 +201,8 @@ export class SCsParsedData {
     // send diagnostic callback (shall be set by scsSession later)
     public sendDiagnostic: undefined | ((params: vs.PublishDiagnosticsParams) => void);
 
-    public parseDocumentANTLR(docText: string, docUri: string) {
+    public async parseDocumentANTLR(docText: string, docUri: string) {
 
-        docUri = makeUri(docUri);
         const finfo = new FileInfo(docUri);
         this.files.set(docUri, finfo);
 
@@ -217,37 +225,111 @@ export class SCsParsedData {
         } catch (e: any) {
             this.console.log(e.stack);
         }
-
-        // send diagnostic
-        if (this.sendDiagnostic) {
-            let resultErrors: vs.Diagnostic[] = [];
-
-            if (finfo) {
-                resultErrors = finfo.getErrors();
-            }
-
-            this.doSendDiagnostic({
-                uri: docUri,
-                diagnostics: resultErrors
-            });
-        }
     }
 
-    public parseDocumentOnline(docText: string, docUri: string) {
+    public async parseDocumentOnline(docText: string, docUri: string) {
+        const finfo = new FileInfo(docUri);
+        this.files.set(docUri, finfo);
         // TODO: placeholder for now
-        this.parseDocumentANTLR(docText, docUri);
+        const SCsASTWalker = (ast: ISCsASTNode) => {
+            if (ast.ruleType === "idtf_system") {
+                finfo.appendSymbol(ast.token!, { start: { line: ast.position.beginLine!, column: ast.position.beginIndex }, end: { line: ast.position.endLine!, column: ast.position.endIndex! } });
+            }
+            ast.children.forEach(child => {
+                SCsASTWalker(child);
+            })
+        }
+
+        const ast = await this.conn.connection!.parseSCs([docText])
+        ast[0].errors.forEach(err => {
+            finfo.appendError({
+                line: err.line,
+                offset: err.position.beginIndex,
+                len: err.position.endIndex ? err.position.endIndex - err.position.beginIndex : 0,
+                msg: err.msg
+            }
+            );
+            this.console.log(JSON.stringify(ast[0]))
+        })
+        SCsASTWalker(ast[0].root)
+
     }
 
     public parseDocument(docText: string, docUri: string) {
-        if (this.conn && this.conn.isOnline) {
-            this.parseDocumentOnline(docText, docUri);
-        }
-        else {
+        docUri = makeUri(docUri);
+        this.console.log("Connected: " + (this.conn && this.conn.isOnline) as unknown as string)
+        const parser_promise = this.conn && this.conn.isOnline ?
+            this.parseDocumentOnline(docText, docUri) :
             this.parseDocumentANTLR(docText, docUri);
-        }
+
+        // send diagnostic
+        parser_promise.then(() => {
+            if (this.sendDiagnostic) {
+                let resultErrors: vs.Diagnostic[] = [];
+                const finfo = this.files.get(docUri)
+                if (finfo) {
+                    resultErrors = finfo.getErrors();
+                }
+                this.doSendDiagnostic({
+                    uri: docUri,
+                    diagnostics: resultErrors
+                });
+            }
+        });
     }
 
-    public provideAutoComplete(docUri: string, prefix: string): string[] {
+    // private async searchSystemIdtfByPrefix(prefix: string): Promise<string[]> {
+    //     const connection = this.conn.connection!;
+    //     const searchNodeByAnyIdentifier = async (idtf: string) => {
+    //         return new Promise(async (resolve) => {
+    //             const searchNodeByIdentifier = async function (linkAddr, identification) {
+    //                 const NODE = "_node";
+
+    //                 const template = new ScTemplate();
+    //                 template.tripleWithRelation(
+    //                     [ScType.Unknown, NODE],
+    //                     ScType.EdgeDCommonVar,
+    //                     linkAddr,
+    //                     ScType.EdgeAccessVarPosPerm,
+    //                     identification,
+    //                 );
+    //                 let result = await connection.templateSearch(template);
+    //                 if (result.length) {
+    //                     return result[0].get(NODE);
+    //                 }
+
+    //                 return null;
+    //             };
+
+    //             if (!this.mainIdtfKeynode) {
+    //                 this.mainIdtfKeynode = await connection.resolveKeynodes([{id: 'nrel_main_idtf', type: ScType.NodeConst}]);
+    //             }
+
+    //             let linkAddrs = await connection.getLinksByContents([idtf]);
+    //             let addr = null;
+
+    //             if (linkAddrs.length) {
+    //                 linkAddrs = linkAddrs[0];
+
+    //                 if (linkAddrs.length) {
+    //                     addr = linkAddrs[0];
+    //                     addr = await searchNodeByIdentifier(addr, scKeynodes["nrel_system_identifier"]);
+    //                     if (!addr) {
+    //                         addr = await searchNodeByIdentifier(addr, window.scKeynodes["nrel_main_idtf"]);
+    //                     }
+
+    //                     if (!addr) {
+    //                         addr = linkAddrs[0];
+    //                     }
+    //                 }
+
+    //                 resolve(addr);
+    //             }
+    //         });
+    //     };
+    // }
+
+    public async provideAutoComplete(docUri: string, prefix: string): Promise<string[]> {
         /// TODO: make unique and faster
         let result: string[] = [];
 
@@ -255,13 +337,22 @@ export class SCsParsedData {
             result = result.concat(value.provideComplete(prefix, docUri));
         });
 
+        if (this.conn && this.conn.isOnline) {
+            let scAddrSets = await this.conn.connection!.getLinksByContentSubstrings([prefix]);
+            scAddrSets.forEach((scAddrs: ScAddr[]) => {
+                scAddrs.forEach((scAddr: ScAddr) => {
+                    // result = result.concat(this.conn.connection!.getLinkContents(scAddr.addr));
+                })
+            })
+        }
+
         const uniqueResult = result.filter(function (item, pos) {
             return result.indexOf(item) == pos;
         });
 
         return uniqueResult;
     }
-
+    // TODO
     public provideWorkspaceSymbolUsage(query: string): vs.SymbolInformation[] {
         const result: vs.SymbolInformation[] = [];
 
@@ -271,7 +362,7 @@ export class SCsParsedData {
             if (ranges) {
                 ranges.forEach((r: SymbolRange) => {
                     const sym: vs.SymbolInformation = vs.SymbolInformation.create(key,
-                        vs.SymbolKind.Variable, toRange(r));
+                        vs.SymbolKind.Variable, toRange(r), "");
                 });
             }
         });

@@ -36,14 +36,14 @@ export class SCsCompletionItemProvider
         return getCurrentPrefix(document, document.offsetAt(position));
     }
 
-    public provide(document: vs.TextDocument,
-                   position: vs.Position) : vs.CompletionItem[]
+    public async provide(document: vs.TextDocument,
+                   position: vs.Position) : Promise<vs.CompletionItem[]>
     {
         const suggestions: vs.CompletionItem[] = [];
         const currentWord: string = this.getToken(document, position);
 
         this.provideKeywords(currentWord, suggestions);
-        this.provideSymbols(this.parsedData.provideAutoComplete(document.uri, currentWord), suggestions);
+        this.provideSymbols(await this.parsedData.provideAutoComplete(document.uri, currentWord), suggestions);
 
         return suggestions;
     }
